@@ -3,31 +3,37 @@
 #![feature(type_alias_impl_trait)]
 
 use cyw43::NetDriver;
-use defmt::*;
-use embassy_executor::Spawner;
-use embassy_rp::gpio;
-use embassy_rp::pio::Pio;
-use embassy_time::{Duration, Timer};
-use embassy_net::{Config, Stack, StackResources};
-use embassy_rp::peripherals::{DMA_CH0, PIN_23, PIN_25, PIO0};
-use embassy_rp::uart;
-use gpio::{Level, Output};
 use cyw43_pio::PioSpi;
-use static_cell::*;
+use defmt::*;
+#[allow(unused_imports)]
+use defmt_rtt;
+use embassy_executor::Spawner;
+use embassy_futures::yield_now;
+use embassy_net::tcp::TcpSocket;
+use embassy_net::{Config, Stack, StackResources};
+use embassy_rp::gpio;
+use embassy_rp::peripherals::{DMA_CH0, PIN_23, PIN_25, PIO0};
+use embassy_rp::pio::Pio;
+use embassy_rp::uart;
+use embassy_time::{Duration, Timer};
+use gpio::{Level, Output};
+#[allow(unused_imports)]
+use panic_probe;
 use rust_mqtt::{
     client::{client::MqttClient, client_config::ClientConfig},
     packet::v5::reason_codes::ReasonCode,
     utils::rng_generator::CountingRng,
 };
-use embassy_net::tcp::{TcpSocket};
-use embassy_futures::yield_now;
 use smoltcp::wire::DnsQueryType;
-#[allow(unused_imports)] use panic_probe;
-#[allow(unused_imports)] use defmt_rtt;
+use static_cell::*;
 
 #[embassy_executor::task]
 async fn wifi_task(
-    runner: cyw43::Runner<'static, Output<'static, PIN_23>, PioSpi<'static, PIN_25, PIO0, 0, DMA_CH0>>,
+    runner: cyw43::Runner<
+        'static,
+        Output<'static, PIN_23>,
+        PioSpi<'static, PIN_25, PIO0, 0, DMA_CH0>,
+    >,
 ) -> ! {
     runner.run().await
 }
@@ -51,7 +57,6 @@ async fn main(_spawner: Spawner) {
     // Initialise Peripherals
     let p = embassy_rp::init(Default::default());
 
-
     // Create LED
     let mut led = Output::new(p.PIN_2, Level::Low);
 
@@ -61,8 +66,15 @@ async fn main(_spawner: Spawner) {
     let pwr = Output::new(p.PIN_23, Level::Low);
     let cs = Output::new(p.PIN_25, Level::High);
     let mut pio = Pio::new(p.PIO0);
-    let spi = PioSpi::new(&mut pio.common, pio.sm0, pio.irq0, cs, p.PIN_24, p.PIN_29, p.DMA_CH0);
-
+    let spi = PioSpi::new(
+        &mut pio.common,
+        pio.sm0,
+        pio.irq0,
+        cs,
+        p.PIN_24,
+        p.PIN_29,
+        p.DMA_CH0,
+    );
 
     let state = make_static!(cyw43::State::new());
     let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw).await;
@@ -86,39 +98,39 @@ async fn main(_spawner: Spawner) {
         seed
     ));
 
-
     unwrap!(_spawner.spawn(net_task(stack)));
 
     let uart_config = uart::Config::default();
 
     let mut uart = uart::Uart::new_blocking(p.UART0, p.PIN_0, p.PIN_1, uart_config);
     info!("info log");
-    uart.blocking_write("rusty_iot starting!\r\n".as_bytes()).unwrap();
-
+    uart.blocking_write("rusty_iot starting!\r\n".as_bytes())
+        .unwrap();
 
     let wifi_ssid = include!("../WIFI_SSID");
     let wifi_pwd = include!("../WIFI_PWD");
-
 
     loop {
         uart.blocking_write("Trying Wifi\r\n".as_bytes()).unwrap();
         match control.join_wpa2(wifi_ssid, wifi_pwd).await {
             Ok(_) => {
-                uart.blocking_write("Connected to WIFI!!\r\n".as_bytes()).unwrap();
+                uart.blocking_write("Connected to WIFI!!\r\n".as_bytes())
+                    .unwrap();
                 break;
-            },
+            }
             Err(_) => {
                 uart.blocking_write("WIFI Failed!!\r\n".as_bytes()).unwrap();
             }
         }
     }
 
-    uart.blocking_write("Waiting for DHCP\r\n".as_bytes()).unwrap();
+    uart.blocking_write("Waiting for DHCP\r\n".as_bytes())
+        .unwrap();
     let cfg = wait_for_config(stack).await;
     let local_addr = cfg.address.address();
-    info!("IP Address {:?}",local_addr);
-    uart.blocking_write("Got IP Address\r\n".as_bytes()).unwrap();
-
+    info!("IP Address {:?}", local_addr);
+    uart.blocking_write("Got IP Address\r\n".as_bytes())
+        .unwrap();
 
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
@@ -131,9 +143,13 @@ async fn main(_spawner: Spawner) {
     led.set_high();
     uart.blocking_write("Connecting On\r\n".as_bytes()).unwrap();
 
-    let host_addr = stack.dns_query("test.mosquitto.org",DnsQueryType::A).await.unwrap()[0];
+    let host_addr = stack
+        .dns_query("test.mosquitto.org", DnsQueryType::A)
+        .await
+        .unwrap()[0];
 
-    socket.connect((host_addr, 1883))
+    socket
+        .connect((host_addr, 1883))
         .await
         .map_err(|_| ReasonCode::NetworkError)
         .unwrap();
@@ -142,18 +158,19 @@ async fn main(_spawner: Spawner) {
         rust_mqtt::client::client_config::MqttVersion::MQTTv5,
         CountingRng(20000),
     );
-    mqtt_config.add_max_subscribe_qos(rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS1);
+    mqtt_config
+        .add_max_subscribe_qos(rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS1);
     mqtt_config.add_client_id("client");
     mqtt_config.max_packet_size = 100;
     let mut recv_buffer = [0; 80];
     let mut write_buffer = [0; 80];
-    let mut mqtt_client = MqttClient::<_,5,_>::new(
+    let mut mqtt_client = MqttClient::<_, 5, _>::new(
         socket,
         &mut write_buffer,
         80,
         &mut recv_buffer,
         80,
-        mqtt_config
+        mqtt_config,
     );
     mqtt_client.connect_to_broker().await.unwrap();
 
@@ -171,9 +188,9 @@ async fn main(_spawner: Spawner) {
             )
             .await
             .unwrap();
-        let msg = mqtt_client.receive_message().await.unwrap().1;
-        uart.blocking_write(msg).unwrap();
-        uart.blocking_write("\r\n".as_bytes()).unwrap();
+        //let msg = mqtt_client.receive_message().await.unwrap().1;
+        //uart.blocking_write(msg).unwrap();
+        //uart.blocking_write("\r\n".as_bytes()).unwrap();
         Timer::after(Duration::from_millis(500)).await;
         led.set_low();
         Timer::after(Duration::from_millis(500)).await;
